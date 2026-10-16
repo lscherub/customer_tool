@@ -6,7 +6,7 @@ import { simpleHash } from '@/lib/utils';
 import { customersEqual, rowToCustomer } from '@/lib/customer-import';
 import { customerDisplayName, originatingLocation, type Customer, type ImportHistoryItem } from '@/lib/types';
 export default function CustomersPage() {
-const { store, setStore } = useStore();
+const { store, setStore, cloud, cloudError, loaded } = useStore();
 const [preview, setPreview] = useState<{ filename: string; rows: Record<string, unknown>[] } | null>(null);
 const [parsing, setParsing] = useState(false);
 const [committing, setCommitting] = useState(false);
@@ -42,7 +42,6 @@ const rec:ImportHistoryItem={ id:'cimp-'+Date.now(), kind:'customers', filename:
 setStore((st)=>({ ...st, customers:Array.from(nextById.values()), customerImports:[rec,...st.customerImports] }));
 setResult('Imported '+preview.rows.length+': +'+added+' added, ~'+updated+' updated, ='+unchanged+' unchanged, '+skipped+' dupes, '+failed+' failed. Missing customers NOT deleted.');
 setPreview(null); } finally { setCommitting(false); } }
-// __PART2__
 const filtered = useMemo(()=>{ const needle=q.trim().toLowerCase(); let arr=store.customers;
 if(needle) arr=arr.filter((c)=>[c.customer_id,c.company,c.first_name,c.last_name,c.email,c.phone1,c.phone2,c.cell_phone,c.referral,c.member_id].filter(Boolean).join(' ').toLowerCase().includes(needle));
 if(fType) arr=arr.filter((c)=>(c.customer_type||'')===fType);
@@ -52,8 +51,10 @@ const pages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
 const pageRows=filtered.slice(page*PAGE_SIZE,page*PAGE_SIZE+PAGE_SIZE);
 const types=useMemo(()=>Array.from(new Set(store.customers.map((c)=>c.customer_type||'').filter(Boolean))).slice(0,50),[store.customers]);
 const last=store.customerImports[0];
-// __PART3__
 return (<div className="space-y-4"><h1 className="text-2xl font-bold">All Customers</h1>
+{!loaded&&<div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Loading shared database…</div>}
+{loaded&&cloud!=='shared'&&<div className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{cloudError ?? 'Shared database unavailable — showing offline cache.'} Imports made now stay on this device until you sign in.</div>}
+{loaded&&cloud==='shared'&&!store.customers.length&&<div className="rounded-lg bg-stone-100 p-3 text-sm text-stone-600">Shared database is empty — import a customer export to populate it for all devices.</div>}
 <Card title="Import customer export from Amber POS" right={last?<span className="text-xs text-stone-500">Last: {last.filename}</span>:undefined}>
 <p className="mb-2 text-sm text-stone-600">Blank first column + blank second row removed automatically. Header-name detection. Customer ID kept as text.</p>
 <div className="flex items-center gap-2"><input type="file" accept=".xlsx,.xls,.csv" onChange={(e)=>{const f=e.target.files?.[0]; if(f) void onFile(f);}} className="text-sm"/>{parsing&&<span className="text-sm">Parsing…</span>}</div>

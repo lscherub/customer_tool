@@ -5,7 +5,7 @@ import { buildWorkbook, downloadWorkbook } from '@/lib/excel';
 import { cad } from '@/lib/utils';
 import type { BatchStatus, PointAdjustment } from '@/lib/types';
 export default function HistoryPage() {
-const { store, setStore } = useStore();
+const { store, setStore, cloud, cloudError, loaded } = useStore();
 const [open, setOpen] = useState<string|null>(null);
 const [kindFilter, setKindFilter] = useState<'all'|'referral'|'manual'>('all');
 const [msg, setMsg] = useState<string|null>(null);
@@ -33,6 +33,8 @@ const pend = store.batches.filter((b)=>b.status==='Exported').length;
 const shown = store.batches.filter((b)=>kindFilter==='all'?true:(b.kind??'referral')===kindFilter);
   void setKindFilter;
 return (<div className="space-y-4"><h1 className="text-2xl font-bold">Reward History</h1>
+{!loaded&&<div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Loading shared database…</div>}
+{loaded&&cloud!=='shared'&&<div className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{cloudError??'Shared database unavailable.'} Showing this device&apos;s offline cache.</div>}
 <p className="text-sm text-stone-600">{store.batches.length} batches · {pend} pending POS import. Re-downloading never creates a new batch.</p>
 {msg&&<div className="rounded bg-emerald-50 p-2 text-sm text-emerald-900">{msg}</div>}
 {!store.batches.length&&<Card title="No batches yet"><p className="text-sm text-stone-500">Export rewards from the Referral Sales page.</p></Card>}

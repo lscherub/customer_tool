@@ -14,7 +14,7 @@ const FIELD_LABELS: { key: keyof SalesFieldMap; label: string }[] = [
   { key: 'store', label: 'Store field' },
 ];
 export default function ReferralsPage() {
-  const { store, setStore } = useStore();
+  const { store, setStore, cloud, cloudError, loaded } = useStore();
   const [period, setPeriod] = useState('2026-10');
   const [preview, setPreview] = useState<{ filename: string; rows: Record<string, unknown>[]; headers: string[] } | null>(null);
   const [fieldMap, setFieldMap] = useState<SalesFieldMap>({ phone: 'group2', net: 'Subtotal', txn: 'TotalTransactions', store: 'StoreName' });
@@ -275,6 +275,8 @@ export default function ReferralsPage() {
     return { batches, referrals };
   };
   return (<div className="space-y-4"><h1 className="text-2xl font-bold">Referral Sales</h1>
+    {!loaded && <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Loading shared database…</div>}
+    {loaded && cloud !== 'shared' && <div className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{cloudError ?? 'Shared database unavailable.'} Sales and rewards shown are this device&apos;s offline cache.</div>}
     <Card title="Import sales summary from Amber POS">
       <div className="grid gap-2 md:grid-cols-4">
         <div><label className="text-xs">Reporting period (you control this)</label><input className={input} value={period} onChange={(e) => setPeriod(e.target.value)} placeholder="2026-10 or 2026-Q3" /></div>

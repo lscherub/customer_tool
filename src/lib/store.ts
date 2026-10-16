@@ -1,4 +1,4 @@
-import { supabaseBrowser, lsGet, lsSet, isSupabaseConfigured } from './data';
+import { lsGet, lsSet } from './data';
 import type { AppSettings, Customer, ImportHistoryItem, ManualPointRecord, PointAdjustment, ReferralAggregate, RewardBatch, RewardEntry, SalesFieldMap } from './types';
 import { DEFAULT_SALES_FIELD_MAP } from './types';
 import { normalizePhone } from './utils';
@@ -48,26 +48,81 @@ export interface StoreShape {
 
 function normalizeEntry(e: unknown): RewardEntry {
   const r = (e ?? {}) as Partial<RewardEntry>;
+  const phones = Array.isArray(r.referral_phones) ? (r.referral_phones as unknown[]).map(String) : undefined;
   return {
     customer_id: String(r.customer_id ?? ''),
     customer_name: String(r.customer_name ?? ''),
     referral_phone: String(r.referral_phone ?? ''),
-    referral_phones: undefined,
+    referral_phones: phones,
     net_sales: Number(r.net_sales) || 0,
     reward_pct: Number(r.reward_pct) || 0,
     reward_value: Number(r.reward_value) || 0,
     points_per_dollar: Number(r.points_per_dollar) || 0,
     points: Math.round(Number(r.points) || 0),
-    member_id: undefined,
-    ar: null,
-    store_credit: null,
-    originating_location: 'Unknown',
-    override_status: null,
-    override_reason: null,
-    override_operator: null,
-    override_at: null,
-    override_verified: null,
+    member_id: typeof r.member_id === 'string' ? r.member_id : undefined,
+    ar: r.ar ?? null,
+    store_credit: r.store_credit ?? null,
+    originating_location: typeof r.originating_location === 'string' ? r.originating_location : 'Unknown',
+    override_status: (r.override_status as RewardEntry['override_status']) ?? null,
+    override_reason: typeof r.override_reason === 'string' ? r.override_reason : null,
+    override_operator: typeof r.override_operator === 'string' ? r.override_operator : null,
+    override_at: typeof r.override_at === 'string' ? r.override_at : null,
+    override_verified: typeof r.override_verified === 'boolean' ? r.override_verified : null,
   };
+}
+
+function normalizeBatch(b: unknown): RewardBatch {
+  const r = (b ?? {}) as Partial<RewardBatch>;
+  const ents = Array.isArray(r.entries) ? r.entries.map(normalizeEntry) : [];
+  const rs = (r.settings ?? {}) as Partial<RewardBatch['settings']>;
+  return {
+    id: String(r.id ?? 'batch'), reporting_period: String(r.reporting_period ?? ''),
+    sales_import_id: typeof r.sales_import_id === 'string' ? r.sales_import_id : undefined,
+    created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
+    filename: String(r.filename ?? 'batch.xlsx'), entries: ents,
+    settings: {
+      reward_pct: Number(rs.reward_pct) || 10,
+      points_per_dollar: Number(rs.points_per_dollar) || 10,
+      rounding: rs.rounding === 'floor' || rs.rounding === 'ceil' ? rs.rounding : 'nearest',
+      optional_columns: Array.isArray(rs.optional_columns) ? (rs.optional_columns as string[]) : [],
+      optional_defaults: (rs.optional_defaults ?? {}) as Record<string, string | number>,
+    },
+    status: (r.status as RewardBatch['status']) ?? 'Exported',
+    total_net_sales: Number(r.total_net_sales) || 0,
+    total_reward_value: Number(r.total_reward_value) || 0,
+    total_points: Math.round(Number(r.total_points) || 0),
+    columns: Array.isArray(r.columns) ? (r.columns as string[]) : ['CustomerID', 'Points'],
+    applied_to_balances: Boolean(r.applied_to_balances),
+    kind: r.kind === 'manual' ? 'manual' as const : 'referral' as const,
+    origin: typeof r.origin === 'string' ? r.origin : undefined,
+  };
+}
+
+function normalizeManual(m: unknown): ManualPointRecord {
+  const r = (m ?? {}) as Partial<ManualPointRecord> & { net_sales?: unknown; reward_pct?: unknown; reward_value?: unknown; projected_balance?: unknown };
+  return {
+    id: String(r.id ?? 'man'),
+    batch_id: typeof r.batch_id === 'string' ? r.batch_id : null,
+    customer_id: String(r.customer_id ?? ''),
+    customer_name: String(r.customer_name ?? ''),
+    originating_location: typeof r.originating_location === 'string' ? r.originating_location : 'Unknown',
+    balance_before: Math.round(Number(r.balance_before) || 0),
+    points_adjustment: Math.round(Number(r.points_adjustment) || 0),
+    balance_after: Math.round(Number(r.balance_after) || 0),
+    reward_amount_dollars: r.reward_amount_dollars ?? (typeof r.reward_value === 'number' ? r.reward_value : null),
+    points_per_dollar: typeof r.points_per_dollar === 'number' ? r.points_per_dollar : null,
+    reason: String(r.reason ?? ''),
+    operator: String(r.operator ?? ''),
+    created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
+    exported_at: typeof r.exported_at === 'string' ? r.exported_at : null,
+    filename: typeof r.filename === 'string' ? r.filename : null,
+    status: r.status === 'Confirmed' || r.status === 'Cancelled' ? r.status : 'Exported',
+    confirmed_at: typeof r.confirmed_at === 'string' ? r.confirmed_at : null,
+    net_sales: typeof r.net_sales === 'number' ? r.net_sales : null,
+    reward_pct: typeof r.reward_pct === 'number' ? r.reward_pct : null,
+    reward_value: typeof r.reward_value === 'number' ? r.reward_value : null,
+    projected_balance: typeof r.projected_balance === 'number' ? Math.round(r.projected_balance) : null,
+  } as ManualPointRecord;
 }
 export function loadStore(): StoreShape {
   const rawB = lsGet<unknown[]>('batches', []);
@@ -108,6 +163,8 @@ export function loadStore(): StoreShape {
 }
 
 export function saveStore(s: StoreShape): void {
+  // localStorage = offline cache only. Supabase write-through happens in
+  // store-context via persistStoreDiff (diffed, authenticated).
   lsSet('customers', s.customers);
   lsSet('customerImports', s.customerImports);
   lsSet('salesImports', s.salesImports);
@@ -116,18 +173,11 @@ export function saveStore(s: StoreShape): void {
   lsSet('adjustments', s.adjustments);
   lsSet('manualPoints', s.manualPoints);
   lsSet('settings', s.settings);
-  void syncToSupabase(s);
 }
 
-async function syncToSupabase(s: StoreShape): Promise<void> {
-  if (!isSupabaseConfigured()) return;
-  try {
-    const sb = supabaseBrowser();
-    if (!sb) return;
-    // Best-effort mirror: upsert settings + batches metadata. Full bulk sync
-    // for 20k customers uses the SQL bulk route documented in README.
-    await sb.from('app_settings').upsert({ id: 1, data: s.settings });
-  } catch { /* offline-safe */ }
+/** Legacy no-op kept for compatibility; writes now flow through store-context. */
+export async function syncToSupabase(_s: StoreShape): Promise<void> {
+  return Promise.resolve();
 }
 
 /** Build phone -> customers index for referral matching. */

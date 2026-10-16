@@ -1,68 +1,86 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card, btn, btnGhost, input, useStore } from '../store-context';
 import { buildWorkbook, downloadWorkbook } from '@/lib/excel';
-import { todayStamp } from '@/lib/utils';
+import { cad, calcReward, todayStamp } from '@/lib/utils';
 import { customerDisplayName, originatingLocation, type Customer, type ManualPointRecord, type RewardBatch } from '@/lib/types';
 
 export default function ManualPointsPage() {
-  const { store, setStore } = useStore();
+  const { store, setStore, cloud, cloudError, cloudUser, loaded } = useStore();
   const [q, setQ] = useState('');
   const [picked, setPicked] = useState<Customer | null>(null);
-  const [ptsText, setPtsText] = useState('');
-  const [dollarsText, setDollarsText] = useState('');
-  const [ppdText, setPpdText] = useState(String(10));
+  const [netText, setNetText] = useState('');
+  const [pctText, setPctText] = useState<string | null>(null);
+  const [ppdText, setPpdText] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [operator, setOperator] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
-  const [, setLastId] = useState<string | null>(null);
+  useEffect(() => {
+    if (pctText === null) setPctText(String(store.settings.reward_pct));
+    if (ppdText === null) setPpdText(String(store.settings.points_per_dollar));
+    if (!operator && cloudUser) setOperator(cloudUser);
+  }, [store.settings, cloudUser, pctText, ppdText, operator]);
   const matches = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return [];
     return store.customers.filter((c) => [c.customer_id, c.company, c.first_name, c.last_name, c.phone1, c.phone2, c.cell_phone].filter(Boolean).join(' ').toLowerCase().includes(needle)).slice(0, 20);
   }, [q, store.customers]);
-  const ptsManual = ptsText.trim() === '' ? null : Number(ptsText);
-  const dollars = dollarsText.trim() === '' ? null : Number(dollarsText);
-  const ppd = ppdText.trim() === '' ? null : Number(ppdText);
-  const derived = dollars !== null && ppd !== null && Number.isFinite(dollars) && Number.isFinite(ppd) ? Math.round(dollars * ppd) : null;
-  const adjustment = ptsManual !== null && Number.isFinite(ptsManual) ? Math.trunc(ptsManual) : derived;
-  const validAdj = adjustment !== null && Number.isFinite(adjustment) && Number.isInteger(adjustment) && adjustment !== 0;
-  const projected = picked && validAdj ? picked.points + (adjustment as number) : null;
+  // Always use the freshest copy of the selected customer (balance changes after confirm).
+  const livePicked = picked ? (store.customers.find((c) => c.customer_id === picked.customer_id) ?? picked) : null;
+  const net = netText.trim() === '' ? null : Number(netText);
+  const pct = (pctText ?? '').trim() === '' ? null : Number(pctText);
+  const ppd = (ppdText ?? '').trim() === '' ? null : Number(ppdText);
+  const validNet = net !== null && Number.isFinite(net) && net > 0;
+  const validPct = pct !== null && Number.isFinite(pct) && pct >= 0;
+  const validPpd = ppd !== null && Number.isFinite(ppd) && ppd >= 0;
+  const calc = validNet && validPct && validPpd ? calcReward(net as number, pct as number, ppd as number, store.settings.rounding) : null;
+  const points = calc ? calc.points : null;
+  const rewardValue = calc ? calc.rewardValue : null;
+  const valid = validNet && validPct && validPpd && points !== null && points > 0;
+  const projected = livePicked && valid ? livePicked.points + (points as number) : null;
   function pick(c: Customer) { setPicked(c); setMsg(null); }
-  function computeAdj(): number | null {
-    if (!validAdj) return null;
-    return adjustment as number;
-  }
   function doExport() {
-    if (!picked) { setMsg('Search and select a customer first.'); return; }
-    const adj = computeAdj();
-    if (adj === null) { setMsg('Enter a non-zero whole-number points adjustment (or dollars x points-per-$1).'); return; }
-    if (!reason.trim()) { setMsg('Enter a reason or note for the adjustment (audit trail).'); return; }
-    if (!operator.trim()) { setMsg('Enter the operator name (audit trail).'); return; }
+    if (!livePicked) { setMsg('Search and select a customer first.'); return; }
+    if (!validNet) { setMsg('Enter the total eligible net sales (before taxes).'); return; }
+    if (!validPct) { setMsg('Enter the reward rate %.'); return; }
+    if (!validPpd) { setMsg('Enter the points-per-$1 rate.'); return; }
+    if (points === null || points <= 0) { setMsg('Calculation produced zero points — check net sales, rate, and conversion.'); return; }
+    const op = (operator.trim() || cloudUser || '').trim();
+    if (!op) { setMsg('Operator identity is required — sign in or type an operator name.'); return; }
     const cols = ['CustomerID', 'Points', ...store.settings.optional_columns.filter((c) => ['MemberID', 'AR', 'StoreCredit'].includes(c))];
-    const row = cols.map((c) => c === 'CustomerID' ? picked.customer_id : c === 'Points' ? adj : c === 'MemberID' ? (picked.member_id ?? '') : c === 'AR' ? (picked.ar ?? '') : c === 'StoreCredit' ? (picked.store_credit ?? '') : '');
+    const row = cols.map((c) => c === 'CustomerID' ? livePicked.customer_id : c === 'Points' ? (points as number) : c === 'MemberID' ? (livePicked.member_id ?? '') : c === 'AR' ? (livePicked.ar ?? '') : c === 'StoreCredit' ? (livePicked.store_credit ?? '') : '');
     const batchId = 'MAN-' + todayStamp() + '-' + String(store.batches.length + 1).padStart(3, '0');
-    const filename = batchId + '-manual-points.xlsx';
+    const filename = batchId + '-manual-reward.xlsx';
     downloadWorkbook(buildWorkbook(cols, [row as (string | number)[]], ['CustomerID']), filename);
     const recId = 'man-' + Date.now();
     const rec: ManualPointRecord = {
-      id: recId, batch_id: batchId, customer_id: picked.customer_id, customer_name: customerDisplayName(picked),
-      originating_location: originatingLocation(picked.customer_id), balance_before: picked.points,
-      points_adjustment: adj, balance_after: picked.points + adj,
-      reward_amount_dollars: dollars, points_per_dollar: ppd, reason: reason.trim(), operator: operator.trim(),
+      id: recId, batch_id: batchId, customer_id: livePicked.customer_id, customer_name: customerDisplayName(livePicked),
+      originating_location: originatingLocation(livePicked.customer_id), balance_before: livePicked.points,
+      points_adjustment: points as number, balance_after: livePicked.points + (points as number),
+      reward_amount_dollars: rewardValue, points_per_dollar: ppd as number,
+      net_sales: net as number, reward_pct: pct as number, reward_value: rewardValue as number,
+      projected_balance: livePicked.points + (points as number),
+      reason: reason.trim(), operator: op,
       created_at: new Date().toISOString(), exported_at: new Date().toISOString(), filename,
       status: 'Exported', confirmed_at: null,
     };
     const batch: RewardBatch = {
       id: batchId, reporting_period: 'manual', created_at: new Date().toISOString(), filename,
-      entries: [{ customer_id: picked.customer_id, customer_name: customerDisplayName(picked), referral_phone: 'manual', referral_phones: ['manual'], net_sales: 0, reward_pct: 0, reward_value: dollars ?? 0, points_per_dollar: ppd ?? 0, points: adj, member_id: picked.member_id, ar: picked.ar ?? null, store_credit: picked.store_credit ?? null, originating_location: originatingLocation(picked.customer_id), override_status: null, override_reason: reason.trim(), override_operator: operator.trim(), override_at: new Date().toISOString(), override_verified: true }],
-      settings: { reward_pct: 0, points_per_dollar: ppd ?? 0, rounding: store.settings.rounding, optional_columns: cols.slice(2), optional_defaults: {} },
-      status: 'Exported', total_net_sales: 0, total_reward_value: dollars ?? 0, total_points: adj, columns: cols, applied_to_balances: false,
-      kind: 'manual', origin: 'Manual points adjustment',
+      entries: [{
+        customer_id: livePicked.customer_id, customer_name: customerDisplayName(livePicked),
+        referral_phone: '', referral_phones: [],
+        net_sales: net as number, reward_pct: pct as number, reward_value: rewardValue as number,
+        points_per_dollar: ppd as number, points: points as number,
+        member_id: livePicked.member_id, ar: livePicked.ar ?? null, store_credit: livePicked.store_credit ?? null,
+        originating_location: originatingLocation(livePicked.customer_id),
+        override_status: null, override_reason: reason.trim() || null, override_operator: op, override_at: new Date().toISOString(), override_verified: true,
+      }],
+      settings: { reward_pct: pct as number, points_per_dollar: ppd as number, rounding: store.settings.rounding, optional_columns: cols.filter((c) => c !== 'CustomerID' && c !== 'Points'), optional_defaults: {} },
+      status: 'Exported', total_net_sales: net as number, total_reward_value: rewardValue as number, total_points: points as number,
+      columns: cols, applied_to_balances: false, kind: 'manual', origin: 'Manual reward',
     };
-    setStore((st) => ({ ...st, batches: [batch, ...st.batches], manualPoints: [rec, ...st.manualPoints] }));
-    setLastId(recId);
-    setMsg('Exported ' + filename + ' (1 row: ' + picked.customer_id + ' ' + (adj > 0 ? '+' : '') + adj + ' pts). Stored balance unchanged until you confirm POS import below.');
+    setStore((st) => ({ ...st, manualPoints: [rec, ...st.manualPoints], batches: [batch, ...st.batches] }));
+    setMsg('Exported ' + filename + ' (' + livePicked.customer_id + ' +' + points + ' pts). Balance unchanged until you confirm the POS import.');
   }
   function confirmRec(id: string) {
     const rec = store.manualPoints.find((m) => m.id === id); if (!rec) return;
@@ -86,31 +104,38 @@ export default function ManualPointsPage() {
     setStore((st) => ({ ...st, manualPoints: st.manualPoints.map((m) => m.id === id ? { ...m, status: 'Cancelled' as const } : m) }));
     setMsg('Cancelled ' + id + '. No balance changed.');
   }
-  return (<div className="space-y-4"><h1 className="text-2xl font-bold">Manual Points Calculator</h1>
-    <p className="text-sm text-stone-600">One-off Amber POS adjustments without a referral report. Export, import in POS, then confirm — only then is the stored balance updated.</p>
-    <Card title="1. Find customer">
+  return (<div className="space-y-4"><h1 className="text-2xl font-bold">Manual Reward Calculator</h1>
+    <p className="text-sm text-stone-600">Same reward math as Referral Sales — for one customer, no sales report needed. Export the POS file, import it in Amber, then confirm. Exporting never changes the stored balance.</p>
+    {!loaded && <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Loading shared customer database…</div>}
+    {loaded && cloud !== 'shared' && <div className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{cloudError ?? 'Shared database unavailable.'} Customer search uses the offline cache stored on this device.</div>}
+    <Card title="1. Customer (from shared All Customers)">
       <input className={input} placeholder="Search Customer ID, name, or phone…" value={q} onChange={(e) => setQ(e.target.value)} />
-      {!!matches.length && (<div className="mt-2 max-h-48 overflow-auto text-sm">{matches.map((c) => (<div key={c.customer_id} className="flex items-center justify-between gap-2 border-b py-1"><span>{customerDisplayName(c)} · {c.customer_id} · {c.points} pts</span><button className={btnGhost} onClick={() => pick(c)}>Select</button></div>))}</div>)}
-      {picked && (<div className="mt-2 rounded bg-emerald-50 p-2 text-sm">Selected: {customerDisplayName(picked)} · {picked.customer_id} · {originatingLocation(picked.customer_id)} · current {picked.points} pts</div>)}
+      {!!matches.length && (<div className="mt-2 max-h-48 overflow-auto text-sm">{matches.map((c) => (<div key={c.customer_id} className="flex items-center justify-between gap-2 border-b py-1"><span>{customerDisplayName(c)} · {c.customer_id} · {originatingLocation(c.customer_id)} · {c.points} pts</span><button className={btnGhost} onClick={() => pick(c)}>Select</button></div>))}</div>)}
+      {q.trim() && !matches.length && <div className="mt-2 text-sm text-stone-500">No customers match — check spelling or import the customer export first.</div>}
+      {livePicked && (<div className="mt-2 rounded bg-emerald-50 p-2 text-sm">Selected: {customerDisplayName(livePicked)} · {livePicked.customer_id} · {originatingLocation(livePicked.customer_id)} · current known balance {livePicked.points} pts</div>)}
     </Card>
-    <Card title="2. Points adjustment">
+    <Card title="2. Reward calculation">
       <div className="grid gap-2 md:grid-cols-3">
-        <label className="text-sm">Points adjustment (whole +/-)<input className={input} value={ptsText} onChange={(e) => setPtsText(e.target.value)} placeholder="50 or -20" /></label>
-        <label className="text-sm">Reward amount $ (optional)<input className={input} value={dollarsText} onChange={(e) => setDollarsText(e.target.value)} placeholder="5.00" /></label>
-        <label className="text-sm">Points per $1 (optional)<input className={input} value={ppdText} onChange={(e) => setPpdText(e.target.value)} /></label>
+        <label className="text-sm">Total Net Sales ($)*<input className={input} value={netText} onChange={(e) => setNetText(e.target.value)} placeholder="20.00" inputMode="decimal" /></label>
+        <label className="text-sm">Reward Rate (%)*<input className={input} value={pctText ?? ''} onChange={(e) => setPctText(e.target.value)} inputMode="decimal" /></label>
+        <label className="text-sm">Points per $1*<input className={input} value={ppdText ?? ''} onChange={(e) => setPpdText(e.target.value)} inputMode="decimal" /></label>
       </div>
       <div className="mt-2 grid gap-2 md:grid-cols-2">
-        <label className="text-sm">Reason / note<input className={input} value={reason} onChange={(e) => setReason(e.target.value)} /></label>
-        <label className="text-sm">Operator<input className={input} value={operator} onChange={(e) => setOperator(e.target.value)} /></label>
+        <label className="text-sm">Reward Value ($) — auto<input className={input} value={rewardValue !== null ? rewardValue.toFixed(2) : ''} readOnly placeholder="—" /></label>
+        <label className="text-sm">Points to Award — auto<input className={input} value={points !== null ? String(points) : ''} readOnly placeholder="—" /></label>
       </div>
-      <div className="mt-2 rounded border p-2 text-sm">Existing: {picked ? picked.points : '—'} · Adjustment: {validAdj ? (adjustment as number) : '—'} · Projected: {projected ?? '—'}</div>
+      <div className="mt-2 grid gap-2 md:grid-cols-2">
+        <label className="text-sm">Notes / Reason (optional)<input className={input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Goodwill gesture…" /></label>
+        <label className="text-sm">Operator<input className={input} value={operator} onChange={(e) => setOperator(e.target.value)} placeholder={cloudUser ?? 'staff name'} /></label>
+      </div>
+      <div className="mt-2 rounded border p-2 text-sm">Current known balance: {livePicked ? livePicked.points + ' pts' : '—'} · Additional points to award: {points !== null ? points + ' pts' : '—'} · Projected balance after POS import: {projected !== null ? projected + ' pts' : '—'} · Reward value: {rewardValue !== null ? cad(rewardValue) : '—'}</div>
       <div className="mt-2"><button className={btn} onClick={doExport}>Export POS File</button></div>
       {msg && <div className="mt-2 rounded bg-emerald-50 p-2 text-sm text-emerald-900">{msg}</div>}
     </Card>
-    <Card title={'Manual adjustment history (' + store.manualPoints.length + ')'}>
-      {!store.manualPoints.length && <p className="text-sm text-stone-500">No manual adjustments yet.</p>}
+    <Card title={'Manual reward history (' + store.manualPoints.length + ')'}>
+      {!store.manualPoints.length && <p className="text-sm text-stone-500">No manual rewards yet.</p>}
       {store.manualPoints.slice(0, 20).map((m) => (<div key={m.id} className="flex flex-wrap items-center justify-between gap-2 border-b py-1.5 text-sm">
-        <span>{m.customer_name} · {m.customer_id} · {m.balance_before} + ({m.points_adjustment}) = {m.balance_after} · {m.status}</span>
+        <span>{m.customer_name} · {m.customer_id} · net {m.net_sales != null ? cad(m.net_sales) : '—'} @ {m.reward_pct ?? '—'}% = {m.reward_value != null ? cad(m.reward_value) : '—'} → +{m.points_adjustment} pts · {m.status}</span>
         <span className="flex gap-2">{m.status === 'Exported' && (<><button className={btn} onClick={() => confirmRec(m.id)}>Confirm POS Import</button><button className={btnGhost} onClick={() => cancelRec(m.id)}>Cancel</button></>)}</span>
       </div>))}
     </Card>

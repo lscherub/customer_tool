@@ -181,6 +181,11 @@ export interface ManualPointRecord {
   balance_after: number;
   reward_amount_dollars: number | null;
   points_per_dollar: number | null;
+  /** Manual-reward calculator inputs (added for shared-DB migration; optional for legacy rows). */
+  net_sales?: number | null;
+  reward_pct?: number | null;
+  reward_value?: number | null;
+  projected_balance?: number | null;
   reason: string;
   operator: string;
   created_at: string;

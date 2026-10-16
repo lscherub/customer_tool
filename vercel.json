@@ -1,5 +1,1 @@
-<<<<<<< HEAD
-{"framework":"nextjs"}
-=======
 {"framework":"nextjs","version":2,"builds":[{"src":"next.config.js","use":"@vercel/next"},{"src":"package.json","use":"@vercel/static-build","config":{"distDir":"out"}}],"routes":[{"src":"/(.*)","dest":"/$1"}]}
->>>>>>> 7db2d58 (feat: update Vercel configuration for Next.js with builds and routing)

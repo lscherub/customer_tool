@@ -14,6 +14,9 @@ const [result, setResult] = useState<string|null>(null);
 const [q, setQ] = useState(''); const [fType, setFType] = useState(''); const [fLoc, setFLoc] = useState('');
 const [sortKey, setSortKey] = useState('name'); const [sortDir, setSortDir] = useState<1|-1>(1);
 const [page, setPage] = useState(0); const PAGE_SIZE = 50;
+  const [histSel, setHistSel] = useState<string[]>([]);
+  const [histConfirm, setHistConfirm] = useState(false);
+  const [histMsg, setHistMsg] = useState<string|null>(null);
 async function onFile(f: File) { setParsing(true); setResult(null);
 try { const p = await parseWorkbookFile(f); setPreview({ filename: f.name, rows: p.rows }); }
 catch(e){ setResult('Parse failed: '+(e instanceof Error?e.message:String(e))); } finally { setParsing(false); } }
@@ -70,6 +73,21 @@ return (<div className="space-y-4"><h1 className="text-2xl font-bold">All Custom
 <tbody>{pageRows.map((c)=>(<tr key={c.customer_id}><td className="tdx">{customerDisplayName(c)}<div className="text-xs text-stone-500">{c.email}</div></td><td className="tdx font-mono">{c.customer_id}</td><td className="tdx text-xs">{[c.phone1,c.phone2,c.cell_phone].filter(Boolean).join(' · ')}</td><td className="tdx">{c.points}</td><td className="tdx text-xs">{c.referral}</td><td className="tdx text-xs">{c.customer_type}</td><td className="tdx text-xs">{originatingLocation(c.customer_id)}</td></tr>))}</tbody></table></div>
 <div className="mt-2 flex items-center justify-between text-sm"><span>Page {page+1} / {pages}</span><div className="flex gap-2"><button className={btnGhost} disabled={page===0} onClick={()=>setPage((p)=>Math.max(0,p-1))}>Prev</button><button className={btnGhost} disabled={page+1>=pages} onClick={()=>setPage((p)=>p+1)}>Next</button></div></div>
 </Card>
-<Card title="Customer import history">{!store.customerImports.length&&<p className="text-sm text-stone-500">No imports yet.</p>}{store.customerImports.slice(0,20).map((h)=>(<div key={h.id} className="flex flex-wrap justify-between gap-2 border-b py-1.5 text-sm"><span>{h.filename} · {new Date(h.imported_at).toLocaleString()}</span><span className="text-stone-600">proc {h.records_processed} · +{h.added} ~{h.updated} ={h.unchanged} skip {h.skipped} fail {h.failed}</span></div>))}</Card>
+<Card title="Customer import history">
+      {!store.customerImports.length&&<p className="text-sm text-stone-500">No imports yet.</p>}
+      {store.customerImports.length>0&&(<div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+        <label className="flex items-center gap-1"><input type="checkbox" checked={histSel.length>0&&histSel.length===Math.min(20,store.customerImports.length)} onChange={(e)=>setHistSel(e.target.checked?store.customerImports.slice(0,20).map((h)=>h.id):[])} /> Select all (page)</label>
+        <span>{histSel.length} selected</span>
+        <button className={btnGhost} disabled={!histSel.length} onClick={()=>setHistConfirm(true)}>Delete Selected</button>
+        {histMsg&&<span className="text-emerald-700">{histMsg}</span>}
+      </div>)}
+      {store.customerImports.slice(0,20).map((h)=>(<div key={h.id} className="flex flex-wrap items-center justify-between gap-2 border-b py-1.5 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={histSel.includes(h.id)} onChange={(e)=>setHistSel(e.target.checked?[...histSel,h.id]:histSel.filter((x)=>x!==h.id))} /><span>{h.filename} · {new Date(h.imported_at).toLocaleString()}</span></label><span className="text-stone-600">proc {h.records_processed} · +{h.added} ~{h.updated} ={h.unchanged} skip {h.skipped} fail {h.failed}</span></div>))}
+      {histConfirm&&(<div className="mt-2 rounded border border-red-300 bg-red-50 p-3 text-sm">
+        <div className="font-semibold">Confirm deletion of {histSel.length} customer import-history record(s)?</div>
+        <ul className="mt-1 list-disc pl-5 text-xs">{histSel.map((id)=>{const h=store.customerImports.find((x)=>x.id===id); return h?(<li key={id}>{h.filename} · {new Date(h.imported_at).toLocaleString()} · +{h.added} ~{h.updated}</li>):null;})}</ul>
+        <p className="mt-1 text-xs">History entries only — customer records, reward batches, and point adjustments are never deleted. Customer imports are not referenced by reward batches, so unreferenced entries can be removed safely.</p>
+        <div className="mt-2 flex gap-2"><button className={btnGhost} onClick={()=>setHistConfirm(false)}>Cancel</button><button className={btn} onClick={()=>{setStore((st)=>({...st,customerImports:st.customerImports.filter((h)=>!histSel.includes(h.id))})); setHistMsg('Deleted '+histSel.length+' customer import-history entr'+(histSel.length===1?'y':'ies')+'. Customer records preserved.'); setHistSel([]); setHistConfirm(false);}}>Confirm Delete</button></div>
+      </div>)}
+      </Card>
 </div>);
 }

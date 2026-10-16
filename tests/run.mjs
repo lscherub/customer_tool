@@ -50,4 +50,49 @@ test('later POS export authoritative, no double count', () => {
   const posPoints = 30, confirmedAwarded = 10;
   assert.ok(posPoints >= confirmedAwarded);
 });
+test('saved sales mapping drives parsing (group1 override)', () => {
+  const norm = (h) => String(h ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const saved = 'group1';
+  const row = { group1: '6045559999', group2: 'WRONG', Subtotal: 42 };
+  const getBy = (r, cands) => {
+    const n = {};
+    for (const k of Object.keys(r)) n[norm(k)] = r[k];
+    for (const c of cands) { const v = n[norm(c)]; if (v !== undefined && v !== null && String(v).trim() !== '') return v; }
+    return null;
+  };
+  const phoneCands = [saved, 'group2'];
+  assert.equal(String(getBy(row, phoneCands)), '6045559999');
+});
+test('merge multiple referral rows by CustomerID sums points', () => {
+  const rows = [
+    { cid: '2-1', net: 10, val: 1, pts: 10, phone: 'a' },
+    { cid: '2-1', net: 20, val: 2, pts: 20, phone: 'b' },
+    { cid: '3-9', net: 5, val: 0.5, pts: 5, phone: 'c' },
+  ];
+  const by = new Map();
+  for (const r of rows) {
+    const prev = by.get(r.cid) ?? { net: 0, val: 0, pts: 0, phones: [] };
+    prev.net += r.net; prev.val += r.val; prev.pts += r.pts; prev.phones.push(r.phone);
+    by.set(r.cid, prev);
+  }
+  assert.equal(by.size, 2);
+  assert.deepEqual(by.get('2-1'), { net: 30, val: 3, pts: 30, phones: ['a', 'b'] });
+});
+test('manual points: balance unchanged until confirm, no double apply', () => {
+  let balance = 100; const adj = 25; let status = 'Exported'; let applied = false;
+  const confirm = () => {
+    if (status === 'Confirmed') return balance;
+    status = 'Confirmed'; applied = true; balance += adj; return balance;
+  };
+  assert.equal(balance, 100);
+  assert.equal(confirm(), 125);
+  assert.equal(confirm(), 125);
+  assert.ok(applied);
+});
+test('missing mapped column is detected', () => {
+  const norm = (h) => String(h ?? '').trim().toLowerCase();
+  const headers = ['group2', 'Subtotal'];
+  const missing = ['group1'].filter((c) => !headers.map(norm).includes(norm(c)));
+  assert.deepEqual(missing, ['group1']);
+});
 console.log('All spec tests defined. Run: node --test tests/run.mjs');

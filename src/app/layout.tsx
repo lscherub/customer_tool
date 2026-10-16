@@ -13,6 +13,7 @@ const NAV = [
   { href: '/customers', label: 'All Customers' },
   { href: '/referrals', label: 'Referral Sales' },
   { href: '/history', label: 'Reward History' },
+  { href: '/manual-points', label: 'Manual Points' },
   { href: '/settings', label: 'Settings' },
 ];
 

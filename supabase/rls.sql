@@ -55,3 +55,7 @@ begin
   end loop;
   return jsonb_build_object('added', v_added, 'updated', v_updated);
 end $$;
+-- RLS for manual_point_records
+do $$ begin
+  create policy staff_all_mpr on manual_point_records for all to authenticated using (true) with check (true);
+exception when duplicate_object then null; end $$;

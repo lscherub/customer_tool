@@ -4,7 +4,7 @@ import { Card, btn, btnGhost, input, useStore } from '../store-context';
 import { buildWorkbook, downloadWorkbook, parseWorkbookFile } from '@/lib/excel';
 import { buildPhoneIndex } from '@/lib/store';
 import { normalizeSalesFieldMap, rowsToSales, validateSalesFieldMap } from '@/lib/sales-import';
-import { cad, calcReward, todayStamp } from '@/lib/utils';
+import { cad, calcReward, currentPeriod, todayStamp } from '@/lib/utils';
 import { customerDisplayName, originatingLocation, type ImportHistoryItem, type ReferralAggregate, type RewardBatch, type RewardEntry, type SalesFieldMap } from '@/lib/types';
 const ALL_COLS = ['CustomerID', 'Points', 'MemberID', 'AR', 'StoreCredit'];
 const FIELD_LABELS: { key: keyof SalesFieldMap; label: string }[] = [
@@ -14,8 +14,8 @@ const FIELD_LABELS: { key: keyof SalesFieldMap; label: string }[] = [
   { key: 'store', label: 'Store field' },
 ];
 export default function ReferralsPage() {
-  const { store, setStore, cloud, cloudError, loaded } = useStore();
-  const [period, setPeriod] = useState('2026-10');
+  const { store, setStore, commitAndSave, cloud, cloudError, loaded } = useStore();
+  const [period, setPeriod] = useState(() => currentPeriod());
   const [preview, setPreview] = useState<{ filename: string; rows: Record<string, unknown>[]; headers: string[] } | null>(null);
   const [fieldMap, setFieldMap] = useState<SalesFieldMap>({ phone: 'group2', net: 'Subtotal', txn: 'TotalTransactions', store: 'StoreName' });
   const [mapInit, setMapInit] = useState(false);
@@ -33,6 +33,10 @@ export default function ReferralsPage() {
   const [parsing, setParsing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  // Clear/reset workflow state (current calculation only — never saved history).
+  const [resetConfirm, setResetConfirm] = useState(false);
+  const [exportedBatch, setExportedBatch] = useState<{ id: string; filename: string; customers: number; points: number; merged: number } | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   async function onFile(f: File) { setParsing(true); setMsg(null);
     try { const p = await parseWorkbookFile(f); setPreview({ filename: f.name, rows: p.rows, headers: p.headers }); setShowPreview(true); } catch (e) { setMsg('Parse failed: ' + (e instanceof Error ? e.message : String(e))); } finally { setParsing(false); } }
   function saveMappings() {
@@ -49,6 +53,30 @@ export default function ReferralsPage() {
     const samePeriod = store.salesImports.filter((h) => h.reporting_period === period);
     return { sameFile, samePeriod };
   }, [preview, period, store.salesImports]);
+  /**
+   * Clear the CURRENT working calculation only: preview, calculator rows,
+   * selections, totals, temporary matches/overrides, warnings and unsaved
+   * form values. Saved sales-import history, exported reward batches,
+   * customer records and point balances are never touched — and the saved
+   * duplicate-period records stay in place, so duplicate warnings still
+   * fire on the next import.
+   */
+  function clearWorkingCalculation() {
+    setStore((st) => ({ ...st, referrals: [] }));
+    setPreview(null);
+    setShowPreview(false);
+    setPeriod(currentPeriod());
+    setSalesSel([]);
+    setSalesConfirm(false);
+    setSalesMsg(null);
+    setOvOpen(null); setOvCid(''); setOvReason(''); setOvOperator(''); setOvAck(false); setOvAllowUnknown(false);
+    setFieldMap(store.settings.sales_field_map ? { ...store.settings.sales_field_map } : { phone: 'group2', net: 'Subtotal', txn: 'TotalTransactions', store: 'StoreName' });
+    setMsg(null);
+    setMapMsg(null);
+    setResetConfirm(false);
+    setExportedBatch(null);
+    setExportError(null);
+  }
   function commitSalesImport() {
     if (!preview || !parsedSales) return;
     if (mapValidation && !mapValidation.ok) {
@@ -99,6 +127,7 @@ export default function ReferralsPage() {
     });
     setMsg('Imported ' + data.length + ' sales rows into ' + aggs.length + ' referrers for ' + period + ' (' + matched + ' matched, ' + ambiguous + ' ambiguous, ' + unmatched + ' unmatched). ' + skipped.length + ' rows skipped (summaries/blank).');
     setPreview(null); setShowPreview(false);
+    setExportedBatch(null); setExportError(null);
   }
   const rows = store.referrals;
   function recalc(id: string, patch: Partial<ReferralAggregate>) {
@@ -240,10 +269,11 @@ export default function ReferralsPage() {
     }
     return Array.from(byCid.values());
   }
-  function doExport() {
+  async function doExport() {
     if (!sel.length) { setMsg('Select at least one matched or override-approved row.'); return; }
     const unresolved = sel.filter((r) => !(r.selected_customer_id || r.matched_customer_id));
     if (unresolved.length) { setMsg('Resolve every selected row to a Customer ID first.'); return; }
+    setExportError(null);
     const cols = ['CustomerID', 'Points', ...store.settings.optional_columns.filter((c) => ALL_COLS.includes(c))];
     const entries = mergeByCustomer(sel);
     const headers = cols;
@@ -251,6 +281,7 @@ export default function ReferralsPage() {
     const wb = buildWorkbook(headers, body as (string | number)[][], ['CustomerID']);
     const batchId = 'RB-' + todayStamp() + '-' + String(store.batches.length + 1).padStart(3, '0');
     const filename = batchId + '-rewards.xlsx';
+    // 1) Generate and download the correct Excel file.
     downloadWorkbook(wb, filename);
     const mergedCount = sel.length - entries.length;
     const batch: RewardBatch = {
@@ -259,8 +290,19 @@ export default function ReferralsPage() {
       status: 'Exported', total_net_sales: tNet, total_reward_value: tVal, total_points: tPts, columns: cols, applied_to_balances: false,
       kind: 'referral', origin: 'Referral rewards',
     };
-    setStore((st) => ({ ...st, batches: [batch, ...st.batches] }));
-    setMsg('Exported ' + filename + ' with ' + entries.length + ' customers (' + tPts + ' pts). Status: Exported / Pending POS Import — confirm on History page after Amber POS import.' + (mergedCount > 0 ? ' ' + mergedCount + ' referral row(s) merged by Customer ID; per-phone breakdown kept in batch history.' : ''));
+    // 2) Save the batch BEFORE treating the export as completed. If the save
+    //    fails, the page keeps its current state and the user is warned —
+    //    nothing is auto-cleared.
+    try {
+      await commitAndSave((st) => ({ ...st, batches: [batch, ...st.batches] }));
+    } catch (e) {
+      setExportError('The Excel file was downloaded, but batch ' + batchId + ' could NOT be saved to the shared database'
+        + (e instanceof Error ? ' (' + e.message + ')' : '')
+        + '. Do not import it into Amber POS — check the connection and export again.');
+      return;
+    }
+    setMsg(null);
+    setExportedBatch({ id: batchId, filename, customers: entries.length, points: tPts, merged: mergedCount });
   }
   function deleteSalesImports(ids: string[]) {
     if (!ids.length) return;
@@ -276,7 +318,22 @@ export default function ReferralsPage() {
   };
   return (<div className="space-y-4"><h1 className="text-2xl font-bold">Referral Sales</h1>
     {!loaded && <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Loading shared database…</div>}
-    {loaded && cloud !== 'shared' && <div className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{cloudError ?? 'Shared database unavailable.'} Sales and rewards shown are this device&apos;s offline cache.</div>}
+    {loaded && cloud !== 'shared' && <div className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{cloudError ?? 'Shared database unavailable.'} Changes cannot be saved until the connection is restored.</div>}
+    {exportedBatch && (<div className="rounded border border-emerald-300 bg-emerald-50 p-3 text-sm">
+      <div className="font-semibold">Batch {exportedBatch.id} exported and saved — {exportedBatch.filename} ({exportedBatch.customers} customer(s), {exportedBatch.points} pts).{exportedBatch.merged > 0 ? ` ${exportedBatch.merged} referral row(s) merged by Customer ID.` : ''}</div>
+      <div className="mt-1 text-xs">Status: Exported / Pending POS Import — confirm on the History page after importing into Amber POS.</div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button className={btnGhost} onClick={() => { setExportedBatch(null); setMsg('Keep working with an already-exported calculation — duplicate warnings are active for overlapping rows. Use Clear All / Reset when finished.'); }}>Keep Working</button>
+        <button className={btn} onClick={() => { setExportedBatch(null); clearWorkingCalculation(); }}>Clear Current Calculation</button>
+      </div>
+    </div>)}
+    {exportError && <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{exportError}</div>}
+    {resetConfirm && (<div className="rounded border border-red-300 bg-red-50 p-3 text-sm">
+      <div className="font-semibold">Clear the current working calculation?</div>
+      <p className="mt-1">This clears the imported report preview, reward calculator rows and selections, totals, temporary customer matches/overrides, and messages on this page.</p>
+      <p className="mt-1 text-xs">Saved history is NOT affected: sales-import history, exported reward batches, customer records, and point balances stay unchanged in the shared database. Duplicate-period warnings will still work on your next import.</p>
+      <div className="mt-2 flex gap-2"><button className={btnGhost} onClick={() => setResetConfirm(false)}>Cancel</button><button className={btn} onClick={clearWorkingCalculation}>Clear Current Calculation</button></div>
+    </div>)}
     <Card title="Import sales summary from Amber POS">
       <div className="grid gap-2 md:grid-cols-4">
         <div><label className="text-xs">Reporting period (you control this)</label><input className={input} value={period} onChange={(e) => setPeriod(e.target.value)} placeholder="2026-10 or 2026-Q3" /></div>
@@ -302,8 +359,9 @@ export default function ReferralsPage() {
       </div>)}
       {msg && <div className="mt-2 rounded bg-emerald-50 p-2 text-sm text-emerald-900">{msg}</div>}
     </Card>
-    <Card title={'Reward calculator (' + rows.length + ' referrers) — selected ' + cad(tNet) + ' · ' + cad(tVal) + ' · ' + tPts + ' pts'} right={<div className="flex gap-2"><button className={btnGhost} onClick={() => toggleAll(true)}>Select all eligible</button><button className={btnGhost} onClick={() => toggleAll(false)}>Clear</button><button className={btn} onClick={doExport}>Export Rewards (.xlsx)</button></div>}>
+    <Card title={'Reward calculator (' + rows.length + ' referrers) — selected ' + cad(tNet) + ' · ' + cad(tVal) + ' · ' + tPts + ' pts'} right={<div className="flex flex-wrap gap-2"><button className={btnGhost} onClick={() => toggleAll(true)}>Select all eligible</button><button className={btnGhost} onClick={() => toggleAll(false)}>Clear</button><button className={btn} onClick={() => void doExport()}>Export Rewards (.xlsx)</button><button className={btnGhost} onClick={() => setResetConfirm(true)}>Clear All / Reset Current Calculation</button></div>}>
       <p className="mb-2 text-xs text-stone-600">Reward Value = Net Sales × Reward Rate. Points to Award = Reward Value × Points per $1.</p>
+      {!rows.length && !preview && <p className="rounded border border-dashed border-stone-300 p-4 text-center text-sm text-stone-500">No sales report loaded. Import a sales report above to begin a new calculation.</p>}
       {!!warnDup.length && <div className="mb-2 rounded bg-amber-50 p-2 text-sm">Duplicate-period warning: {warnDup.join(', ')}.</div>}
       <div className="overflow-x-auto"><table className="w-full border-collapse text-sm"><thead><tr><th className="thx">Sel</th><th className="thx">Phone</th><th className="thx">Referrer</th><th className="thx">Net Sales</th><th className="thx">Reward Rate (%)</th><th className="thx">Reward Value ($)</th><th className="thx">Points per $1</th><th className="thx">Points to Award</th><th className="thx">Status</th></tr></thead><tbody>
         {rows.map((r) => {

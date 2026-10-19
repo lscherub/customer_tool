@@ -1,5 +1,5 @@
-// Shared-database sync engine: Supabase is the source of truth,
-// localStorage remains as offline cache. Writes are diffed so a
+// Shared-database sync engine: Supabase is the single source of truth —
+// there is no browser-local cache of business data. Writes are diffed so a
 // 20k-customer database is never re-uploaded on every keystroke.
 import { supabaseBrowser, selectAll } from './data';
 import { normalizeStoredSettings, DEFAULT_SETTINGS, type StoreShape } from './store';
@@ -46,6 +46,8 @@ function customerToRow(c: Customer) {
     postal: c.postal ?? null,
     country: c.country ?? null,
     raw: (c.raw ?? {}) as Record<string, unknown>,
+    active: c.active !== false,
+    deactivated_at: c.deactivated_at ?? null,
     updated_at: c.updated_at ?? new Date().toISOString(),
   };
 }
@@ -65,6 +67,8 @@ function rowToCustomer(r: Record<string, unknown>): Customer {
     address1: s('address1'), address2: s('address2'), city: s('city'),
     province: s('province'), postal: s('postal'), country: s('country'),
     raw: (r.raw as Record<string, unknown>) ?? {},
+    active: r.active === false ? false : true,
+    deactivated_at: typeof r.deactivated_at === 'string' ? (r.deactivated_at as string) : null,
     updated_at: typeof r.updated_at === 'string' ? (r.updated_at as string) : new Date().toISOString(),
   };
 }
@@ -264,7 +268,12 @@ export async function persistStoreDiff(prev: StoreShape | null, next: StoreShape
   for (const ch of chunk(changedCust, 500)) {
     if (!ch.length) break;
     const { error } = await sb.from('customers').upsert(ch.map(customerToRow), { onConflict: 'customer_id' });
-    if (error) throw new Error('customers sync failed: ' + error.message);
+    if (error) {
+      if (/column .* does not exist|schema cache/i.test(error.message)) {
+        throw new Error('Customer sync failed: run supabase/migration-admin-controls.sql in the Supabase SQL Editor, then retry. (' + error.message + ')');
+      }
+      throw new Error('customers sync failed: ' + error.message);
+    }
   }
   const idSet = (list: { id: string }[]) => new Set((list ?? []).map((x) => x.id));
   const prevCImp = idSet(prev?.customerImports ?? []);

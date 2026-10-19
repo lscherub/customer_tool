@@ -5,6 +5,15 @@ export type BatchStatus = 'Draft' | 'Exported' | 'Confirmed' | 'Cancelled';
 export type BatchKind = 'referral' | 'manual';
 export type OverrideStatus = 'Manual Override — Verified' | 'Manual Override — Unmatched Recipient';
 
+/**
+ * Authentication gate status for protected pages.
+ * - loading: session is being checked; show a neutral screen, never protected data.
+ * - signedOut: no valid session; protected content must not render.
+ * - error: signed in, but the shared database could not be loaded (retry available).
+ * - ready: authenticated and data loaded.
+ */
+export type AuthStatus = 'loading' | 'signedOut' | 'error' | 'ready';
+
 export interface SalesFieldMap {
   phone: string;
   net: string;
@@ -58,6 +67,9 @@ export interface Customer {
   country?: string;
   raw?: Record<string, unknown>;
   updated_at: string;
+  /** false = archived/deactivated: hidden from search and referral matching, kept for history. */
+  active?: boolean;
+  deactivated_at?: string | null;
 }
 
 export interface ImportHistoryItem {
@@ -155,6 +167,8 @@ export interface BatchSettings {
 export interface AppSettings extends BatchSettings {
   sales_field_map: SalesFieldMap;
   updated_at: string;
+  /** Dashboard display preference only (never business data): show optional summary stats. */
+  dashboard_show_summaries?: boolean;
 }
 
 export const DEFAULT_APP_SALES_FIELD_MAP: SalesFieldMap = { ...DEFAULT_SALES_FIELD_MAP };

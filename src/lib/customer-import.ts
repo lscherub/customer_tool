@@ -56,6 +56,9 @@ export function rowToCustomer(row: Record<string, unknown>): { customer: Custome
 }
 
 export function customersEqual(a: Customer, b: Customer): boolean {
-  const strip = (c: Customer) => ({ ...c, raw: undefined, updated_at: undefined });
+  // Archive state (active/deactivated_at) is app-managed, not part of the POS
+  // export file — comparing it would mark every row "updated" on re-import
+  // and silently un-archive customers.
+  const strip = (c: Customer) => ({ ...c, raw: undefined, updated_at: undefined, active: undefined, deactivated_at: undefined });
   return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
 }

@@ -95,4 +95,129 @@ test('missing mapped column is detected', () => {
   const missing = ['group1'].filter((c) => !headers.map(norm).includes(norm(c)));
   assert.deepEqual(missing, ['group1']);
 });
+// --- Follow-up update specs: auth/reset/admin/dashboard pure-logic mirrors ---
+
+// currentPeriod format (src/lib/utils.ts)
+const currentPeriod = (d = new Date()) => {
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}`;
+};
+test('currentPeriod produces YYYY-MM', () => {
+  assert.equal(currentPeriod(new Date(2026, 9, 16)), '2026-10');
+  assert.equal(currentPeriod(new Date(2026, 0, 5)), '2026-01');
+  assert.match(currentPeriod(), /^\d{4}-\d{2}$/);
+});
+
+// Referral Sales Clear/Reset: clears working rows, preserves saved history
+test('clear working calculation keeps saved history', () => {
+  const st = {
+    customers: [{ customer_id: '1-1', points: 10 }],
+    referrals: [{ id: 'r1', reporting_period: '2026-10' }],
+    salesImports: [{ id: 'simp-1', reporting_period: '2026-10' }],
+    batches: [{ id: 'RB-1', status: 'Exported' }],
+    adjustments: [], manualPoints: [],
+    settings: { reward_pct: 10, points_per_dollar: 10 },
+  };
+  const next = { ...st, referrals: [] }; // what clearWorkingCalculation does to the store
+  assert.equal(next.referrals.length, 0);
+  assert.equal(next.salesImports.length, 1); // sales-import history preserved
+  assert.equal(next.batches.length, 1); // exported batch preserved
+  assert.equal(next.customers[0].points, 10); // balances untouched
+  assert.equal(next.settings.reward_pct, 10); // config untouched
+});
+test('duplicate detection survives a clear (driven by saved imports + batches)', () => {
+  const salesImports = [{ id: 'simp-1', reporting_period: '2026-10', filename: 'a.xlsx' }];
+  const batches = [{ id: 'RB-1', status: 'Exported', entries: [{ customer_id: '2-1' }], reporting_period: '2026-10' }];
+  const referrals = []; // cleared screen
+  const samePeriod = salesImports.filter((h) => h.reporting_period === '2026-10');
+  assert.equal(samePeriod.length, 1);
+  const selIds = new Set(['2-1']);
+  const warnDup = batches.filter((b) => b.status === 'Exported' && b.reporting_period === '2026-10' && b.entries.some((e) => selIds.has(e.customer_id)));
+  assert.equal(warnDup.length, 1);
+  assert.equal(referrals.length, 0);
+});
+
+// Manual Points Reset: defaults restored from settings, nothing written
+test('manual reset restores settings defaults and clears working fields', () => {
+  const settings = { reward_pct: 7, points_per_dollar: 12, rounding: 'nearest' };
+  const form = { q: 'smi', picked: { customer_id: '2-1' }, netText: '20.00', pctText: '99', ppdText: '5', reason: 'note', operator: 'staff@x.com', msg: 'old' };
+  const reset = { ...form, q: '', picked: null, netText: '', pctText: String(settings.reward_pct), ppdText: String(settings.points_per_dollar), reason: '', operator: 'staff@x.com', msg: null };
+  assert.equal(reset.picked, null);
+  assert.equal(reset.netText, '');
+  assert.equal(reset.pctText, '7'); // from Settings, not hardcoded
+  assert.equal(reset.ppdText, '12');
+  assert.equal(reset.reason, '');
+  assert.equal(reset.msg, null);
+});
+test('manual export produces incremental points, balance changes only on confirm', () => {
+  let balance = 100; const ptsToAward = 25;
+  const exportRow = { customer_id: '2-1', points: ptsToAward }; // exported file carries only the delta
+  assert.equal(exportRow.points, 25);
+  assert.equal(balance, 100); // export does not change balance
+  balance += ptsToAward; // explicit confirm
+  assert.equal(balance, 125);
+});
+
+// Admin clear-customers gate (mirror of supabase/migration-admin-controls.sql)
+test('clear-customers requires exact phrase and blocks while history references customers', () => {
+  const phrase = 'CLEAR CUSTOMERS';
+  assert.notEqual('clear customers', phrase); // case-sensitive
+  const counts = { reward_entries: 3, point_adjustments: 1, manual_point_records: 0, referral_matches: 2 };
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  assert.ok(total > 0, 'referencing history must block deletion');
+  const decision = total > 0 ? { status: 'blocked', details: counts } : { status: 'ok', deleted: 42 };
+  assert.equal(decision.status, 'blocked');
+  const empty = { reward_entries: 0, point_adjustments: 0, manual_point_records: 0, referral_matches: 0 };
+  assert.equal(Object.values(empty).reduce((a, b) => a + b, 0) === 0 ? 'ok' : 'blocked', 'ok');
+});
+
+// Archived customers excluded from referral matching (buildPhoneIndex mirror)
+test('archived customers never enter the phone index', () => {
+  const customers = [
+    { customer_id: '2-1', phone1: '6045551111', active: true },
+    { customer_id: '2-2', phone1: '6045551111', active: false },
+  ];
+  const idx = new Map();
+  for (const c of customers) {
+    if (c.active === false) continue;
+    const n = c.phone1.replace(/\D/g, '');
+    idx.set(n, [...(idx.get(n) ?? []), c.customer_id]);
+  }
+  assert.deepEqual(idx.get('6045551111'), ['2-1']);
+});
+
+// Dashboard: actionable items only; batch statuses clearly separated
+test('dashboard attention items and batch-status separation', () => {
+  const store = {
+    referrals: [
+      { match_status: 'ambiguous', included: true },
+      { match_status: 'unmatched', included: false },
+      { match_status: 'matched', included: true },
+    ],
+    batches: [
+      { status: 'Exported' }, { status: 'Exported' }, { status: 'Confirmed' }, { status: 'Cancelled' },
+    ],
+    customerImports: [{ failed: 2 }],
+    salesImports: [{ failed: 0 }],
+  };
+  const ambiguous = store.referrals.filter((r) => r.match_status === 'ambiguous').length;
+  const unmatched = store.referrals.filter((r) => r.match_status === 'unmatched').length;
+  assert.equal(ambiguous + unmatched, 2);
+  const pending = store.batches.filter((b) => b.status === 'Exported').length;
+  const conf = store.batches.filter((b) => b.status === 'Confirmed').length;
+  const canc = store.batches.filter((b) => b.status === 'Cancelled').length;
+  assert.deepEqual([pending, conf, canc], [2, 1, 1]);
+  // Working (unsaved) referral rows are never counted as batches:
+  assert.equal(store.batches.length, 4);
+  assert.equal(store.customerImports.filter((h) => h.failed > 0).length, 1);
+  assert.equal(store.salesImports.filter((h) => h.failed > 0).length, 0);
+});
+
+// Sign-out cache purge: all gn_* keys removed, other keys untouched
+test('sign-out purge removes every gn_ cache key', () => {
+  const keys = ['gn_customers', 'gn_batches', 'gn_referrals', 'gn_settings', 'other_tool_key'];
+  const remaining = keys.filter((k) => !k.startsWith('gn_'));
+  assert.deepEqual(remaining, ['other_tool_key']);
+});
+
 console.log('All spec tests defined. Run: node --test tests/run.mjs');

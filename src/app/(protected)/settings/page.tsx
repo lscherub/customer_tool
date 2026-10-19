@@ -11,7 +11,7 @@ function toggleCol(c: string) { setS((p)=>({ ...p, optional_columns: p.optional_
 function save() { setStore((st)=>({ ...st, settings: { ...s, updated_at: new Date().toISOString() } })); setMsg('Defaults saved. Past batches keep their own settings — nothing was recalculated.'); }
 return (<div className="space-y-4"><h1 className="text-2xl font-bold">Settings</h1>
 {!loaded&&<div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Loading shared settings…</div>}
-{loaded&&cloud!=='shared'&&<div className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{cloudError??'Shared database unavailable.'} Saving now updates this device only until you connect and sign in.</div>}
+{loaded&&cloud!=='shared'&&<div className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{cloudError??'Shared database unavailable.'} Changes cannot be saved until the connection is restored and you are signed in.</div>}
 <Card title="Default reward rules (defaults only — never hardcoded)">
 <div className="grid gap-3 md:grid-cols-3">
 <label className="text-sm">Default reward %<input className={input} type="number" value={s.reward_pct} onChange={(e)=>setS({...s,reward_pct:Number(e.target.value)})}/></label>

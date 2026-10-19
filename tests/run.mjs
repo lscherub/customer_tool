@@ -220,4 +220,55 @@ test('sign-out purge removes every gn_ cache key', () => {
   assert.deepEqual(remaining, ['other_tool_key']);
 });
 
+
+// All Customers: Excel-like column sorting (mirror of compareSortValues in customers/page.tsx)
+const isBlankSortValue = (v) => v === null || v === undefined || v === '';
+const compareSortValues = (a, b, type, dir = 1) => {
+  const aBlank = isBlankSortValue(a); const bBlank = isBlankSortValue(b);
+  if (aBlank || bBlank) return aBlank === bBlank ? 0 : aBlank ? 1 : -1;
+  if (type === 'number') return (Number(a) - Number(b)) * dir;
+  if (type === 'date') {
+    const ta = Date.parse(String(a)); const tb = Date.parse(String(b));
+    if (Number.isNaN(ta) || Number.isNaN(tb)) return Number.isNaN(ta) === Number.isNaN(tb) ? 0 : Number.isNaN(ta) ? 1 : -1;
+    return (ta - tb) * dir;
+  }
+  return String(a).localeCompare(String(b)) * dir;
+};
+test('numeric columns sort numerically (Smallest to Largest), not as text', () => {
+  const points = [100, 9, 20, 3];
+  assert.deepEqual([...points].sort((a, b) => compareSortValues(a, b, 'number')), [3, 9, 20, 100]);
+  assert.deepEqual([...points].sort((a, b) => compareSortValues(a, b, 'number', -1)), [100, 20, 9, 3]);
+});
+test('Customer IDs and phone numbers stay text (leading zeros intact)', () => {
+  const ids = ['10', '0123456789', '2'];
+  const asc = [...ids].sort((a, b) => compareSortValues(a, b, 'text'));
+  assert.deepEqual(asc, ['0123456789', '10', '2']); // lexicographic, not numeric
+  assert.notDeepEqual(asc, [...ids].sort((a, b) => compareSortValues(a, b, 'number')));
+  assert.equal(asc[0], '0123456789'); // sorting never rewrites the value itself
+});
+test('date columns sort chronologically, not as text', () => {
+  const dates = ['Feb 5, 2024', 'November 3, 2023', 'Dec 31, 2023'];
+  const asc = [...dates].sort((a, b) => compareSortValues(a, b, 'date'));
+  assert.deepEqual(asc, ['November 3, 2023', 'Dec 31, 2023', 'Feb 5, 2024']);
+  assert.notDeepEqual(asc, [...dates].sort((a, b) => compareSortValues(a, b, 'text')));
+});
+test('blank cells always sort last, in both directions', () => {
+  const vals = ['', 'b', null, 'a'];
+  assert.deepEqual([...vals].sort((a, b) => compareSortValues(a, b, 'text')), ['a', 'b', '', null]);
+  assert.deepEqual([...vals].sort((a, b) => compareSortValues(a, b, 'text', -1)), ['b', 'a', '', null]);
+});
+
+// All Customers: bulk deletion (mirror of deleteCustomersByIds in src/lib/admin.ts)
+test('bulk delete chunks selected IDs and fails safe when links cannot be verified', () => {
+  const chunkIds = (ids, size = 300) => { const out = []; for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size)); return out; };
+  const ids = Array.from({ length: 650 }, (_, i) => `1-${i}`);
+  const chunks = chunkIds(ids);
+  assert.equal(chunks.length, 3);
+  assert.deepEqual(chunks.flat(), ids);
+  const proceed = (verifyError, linkedCount) => !verifyError && linkedCount === 0;
+  assert.equal(proceed(null, 0), true);                   // verified clean → delete may proceed
+  assert.equal(proceed(null, 3), false);                  // linked history → blocked with an explanation
+  assert.equal(proceed(new Error('check failed'), 0), false); // cannot verify → refuse (fail safe)
+});
+
 console.log('All spec tests defined. Run: node --test tests/run.mjs');

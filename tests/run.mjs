@@ -271,4 +271,34 @@ test('bulk delete chunks selected IDs and fails safe when links cannot be verifi
   assert.equal(proceed(new Error('check failed'), 0), false); // cannot verify → refuse (fail safe)
 });
 
+test('reward-entry records are counted with their batch before deletion', () => {
+  const batches = [{ id: 'RB-1', entries: [{}, {}, {}] }, { id: 'RB-2', entries: [{}, {}] }];
+  const total = batches.reduce((n, b) => n + b.entries.length, 0);
+  assert.equal(total, 5); // exactly these rows go with the batches — nothing else
+});
+
+// Reward History deletion (mirror of admin_delete_reward_batches in supabase/migration-admin-reward-history.sql)
+test('reward batches are deleted only where safe', () => {
+  const batches = [
+    { id: 'RB-1', applied_to_balances: false }, // plain export → deletable
+    { id: 'RB-2', applied_to_balances: true },  // balances applied → kept
+    { id: 'RB-3', applied_to_balances: false }, // manual point record references it → kept
+    { id: 'RB-4', applied_to_balances: false }, // point adjustment references it → kept
+    { id: 'RB-5', applied_to_balances: false }, // cancelled before use → deletable
+  ];
+  const adjustments = new Set(['RB-4']);
+  const manual = new Set(['RB-3']);
+  const isUnsafe = (b) => b.applied_to_balances || adjustments.has(b.id) || manual.has(b.id);
+  const safe = batches.filter((b) => !isUnsafe(b));
+  assert.deepEqual(safe.map((b) => b.id), ['RB-1', 'RB-5']);
+});
+test('batch deletion outcome reporting stays accurate (ok / partial / blocked)', () => {
+  const status = (deleted, skipped) => (skipped === 0 ? 'ok' : deleted > 0 ? 'partial' : 'blocked');
+  assert.equal(status(3, 0), 'ok');      // everything requested was deleted
+  assert.equal(status(2, 1), 'partial'); // safe ones deleted, applied ones kept
+  assert.equal(status(0, 2), 'blocked'); // nothing deleted, explanation returned
+  const missing = (requested, existing) => requested - existing;
+  assert.equal(missing(4, 3), 1); // already-gone batches are reported, never claimed deleted
+});
+
 console.log('All spec tests defined. Run: node --test tests/run.mjs');

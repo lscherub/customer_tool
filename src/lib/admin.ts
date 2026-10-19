@@ -211,3 +211,66 @@ export async function deleteCustomersByIds(
   }
   return { ok: true, deleted: deletedIds.length, message: `Deleted ${deletedIds.length} customer record(s) from the shared database. Reward history, sales imports, audit logs and point applications were not touched.`, deletedIds };
 }
+
+/* ------------------------------------------------------------------------ */
+/* Reward-history deletion (Reward History page — batch selection).          */
+/* ------------------------------------------------------------------------ */
+
+/** Result of deleting reward batches: exact counts plus the batches that were
+ *  kept because applied history references them. */
+export type RewardHistoryDeleteResult = AdminOpResult & {
+  /** Reward-entry records removed together with their batches (ON DELETE CASCADE). */
+  entriesDeleted: number;
+  /** Batch ids kept because applied point records or an applied balance reference them. */
+  skipped: string[];
+  /** Requested batches that no longer existed (already removed elsewhere). */
+  missing: number;
+};
+
+/**
+ * Delete exactly the selected reward batches, including their batch details and
+ * associated reward-entry records — only where safe.
+ *
+ * Enforced by `admin_delete_reward_batches` (supabase/migration-admin-reward-history.sql)
+ * in the database: administrator authorization is re-checked there (UI checks are
+ * display-only and never the security boundary), batches referenced by point
+ * adjustments, manual point records or an applied-to-balances flag are refused and
+ * reported back by id, reward entries are removed via the existing ON DELETE
+ * CASCADE, and the deletion is written to the audit log. Point adjustments, manual
+ * point records, sales imports, customers and import history are never touched.
+ */
+export async function deleteRewardBatches(batchIds: string[]): Promise<RewardHistoryDeleteResult> {
+  const base = { entriesDeleted: 0, skipped: [] as string[], missing: 0 };
+  if (!batchIds.length) return { ok: false, message: 'No batches selected.', ...base };
+  const sb = supabaseBrowser();
+  if (!sb) return { ok: false, message: 'Not signed in.', ...base };
+  const { data, error } = await sb.rpc('admin_delete_reward_batches', { p_batch_ids: batchIds });
+  if (error) {
+    if (error.code === '42883' || /could not find the function|function .* does not exist/i.test(error.message)) {
+      return { ok: false, message: 'Reward-history deletion is not installed yet — run supabase/migration-admin-reward-history.sql in the Supabase SQL Editor, then retry. Nothing was deleted.', ...base };
+    }
+    return { ok: false, message: 'Database error: ' + error.message, ...base };
+  }
+  const r = (data ?? {}) as { status?: string; deleted?: number; entries_deleted?: number; skipped?: string[]; missing?: number; reason?: string; details?: Record<string, number> };
+  const deleted = r.deleted ?? 0;
+  const entries = r.entries_deleted ?? 0;
+  const skipped = Array.isArray(r.skipped) ? r.skipped : [];
+  const missing = r.missing ?? 0;
+  if (r.status === 'blocked') {
+    return {
+      ok: false, blocked: true, deleted: 0, entriesDeleted: 0, skipped, missing, details: r.details,
+      message: `Nothing was deleted. ${r.reason ?? 'The selected batches are referenced by applied point records and cannot be deleted.'}${skipped.length ? ` Kept: ${skipped.join(', ')}.` : ''} Point adjustments, manual point records, sales imports, customers and audit logs were not touched.`,
+    };
+  }
+  if (deleted === 0) {
+    return {
+      ok: true, deleted: 0, entriesDeleted: 0, skipped, missing, details: r.details,
+      message: `Deleted 0 of ${batchIds.length} selected reward batch(es): none of them exist in the shared database anymore (already removed elsewhere). The list was refreshed.`,
+    };
+  }
+  let msg = `Deleted ${deleted} reward batch(es) and ${entries} reward-entry record(s) from the shared database.`;
+  if (skipped.length) msg += ` ${skipped.length} selected batch(es) were NOT deleted because applied point records or an applied balance reference them: ${skipped.join(', ')}.`;
+  if (missing) msg += ` ${missing} selected batch(es) were no longer present (already removed elsewhere).`;
+  msg += ' Point adjustments, manual point records, sales imports, customers and audit logs were not touched.';
+  return { ok: true, deleted, entriesDeleted: entries, skipped, missing, details: r.details, message: msg };
+}
